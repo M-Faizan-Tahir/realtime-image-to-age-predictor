@@ -82,7 +82,7 @@ def detect_age_and_gender(frame, face_net, age_net, gender_net, confidence_thres
         GENDER_LIST = ['Male', 'Female']
         
         # Resize frame while maintaining aspect ratio
-        target_size = (640, 480)
+        target_size = (320, 240)
         frame = cv2.resize(frame, target_size, interpolation=cv2.INTER_AREA)
         
         # Detect faces
