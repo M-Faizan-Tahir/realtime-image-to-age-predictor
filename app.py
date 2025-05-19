@@ -1,212 +1,140 @@
 import streamlit as st
 import cv2
 import numpy as np
-import os
-import logging
-from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
+from streamlit_webrtc import webrtc_streamer, RTCConfiguration, VideoProcessorBase
 import av
+import os
+from twilio.rest import Client
+import logging
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+# Set up logging
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Suppress excessive logging from streamlit-webrtc dependencies
-st_webrtc_logger = logging.getLogger("streamlit_webrtc")
-st_webrtc_logger.setLevel(logging.WARNING)
-aioice_logger = logging.getLogger("aioice")
-aioice_logger.setLevel(logging.WARNING)
+# Model paths
+FACE_PROTO = "opencv_face_detector.pbtxt"
+FACE_MODEL = "opencv_face_detector_uint8.pb"
+AGE_PROTO = "age_deploy.prototxt"
+AGE_MODEL = "age_net.caffemodel"
+GENDER_PROTO = "gender_deploy.prototxt"
+GENDER_MODEL = "gender_net.caffemodel"
 
-# [Your existing functions: load_models, faceBox, detect_age_and_gender]
-# These are copied from your original app.py, unchanged
+# Model parameters
+MODEL_MEAN_VALUES = (78.4263377603, 87.7689143744, 114.895847746)
+AGE_LIST = ["(0-2)", "(4-6)", "(8-12)", "(15-20)", "(25-32)", "(38-43)", "(48-53)", "(60-100)"]
+GENDER_LIST = ["Male", "Female"]
+
 def load_models():
     try:
-        model_files = {
-            "face_proto": "opencv_face_detector.pbtxt",
-            "face_model": "opencv_face_detector_uint8.pb",
-            "age_proto": "age_deploy.prototxt",
-            "age_model": "age_net.caffemodel",
-            "gender_proto": "gender_deploy.prototxt",
-            "gender_model": "gender_net.caffemodel"
-        }
-        
-        for key, file in model_files.items():
-            if not os.path.exists(file):
-                logger.error(f"Missing model file: {file}")
-                st.error(f"Model file {file} not found. Please ensure all model files are in the correct directory.")
-                return None, None, None
-                
-        face_net = cv2.dnn.readNet(model_files["face_model"], model_files["face_proto"])
-        age_net = cv2.dnn.readNet(model_files["age_model"], model_files["age_proto"])
-        gender_net = cv2.dnn.readNet(model_files["gender_model"], model_files["gender_proto"])
-        
+        face_net = cv2.dnn.readNet(FACE_MODEL, FACE_PROTO)
+        age_net = cv2.dnn.readNet(AGE_MODEL, AGE_PROTO)
+        gender_net = cv2.dnn.readNet(GENDER_MODEL, GENDER_PROTO)
         logger.info("Successfully loaded all models")
         return face_net, age_net, gender_net
     except Exception as e:
-        logger.error(f"Failed to load models: {str(e)}")
-        st.error(f"Error loading models: {str(e)}")
+        logger.error(f"Error loading models: {e}")
+        st.error(f"Error loading models: {e}")
         return None, None, None
 
-def faceBox(faceNet, frame, confidence_threshold=0.7):
-    try:
-        frame_height = frame.shape[0]
-        frame_width = frame.shape[1]
-        blob = cv2.dnn.blobFromImage(frame, 1.0, (227, 227), [104, 117, 123], swapRB=False)
-        faceNet.setInput(blob)
-        detection = faceNet.forward()
-        bboxs = []
-        for i in range(detection.shape[2]):
-            confidence = detection[0, 0, i, 2]
-            if confidence > confidence_threshold:
-                x1 = int(detection[0, 0, i, 3] * frame_width)
-                y1 = int(detection[0, 0, i, 4] * frame_height)
-                x2 = int(detection[0, 0, i, 5] * frame_width)
-                y2 = int(detection[0, 0, i, 6] * frame_height)
-                bboxs.append([x1, y1, x2, y2])
-                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 1)
-        return frame, bboxs
-    except Exception as e:
-        logger.error(f"Error in faceBox: {str(e)}")
-        return frame, []
+face_net, age_net, gender_net = load_models()
 
-def detect_age_and_gender(frame, face_net, age_net, gender_net, confidence_threshold):
-    try:
-        if frame is None or frame.size == 0:
-            logger.error("Invalid frame received")
-            return None, False
-        
-        MODEL_MEAN_VALUES = (78.4263377603, 87.7689143744, 114.895847746)
-        AGE_LIST = ['(0-2)', '(4-6)', '(8-12)', '(15-20)', '(25-32)', '(38-43)', '(48-53)', '(60-100)']
-        GENDER_LIST = ['Male', 'Female']
-        
-        # Resize frame while maintaining aspect ratio
-        target_size = (640, 480)
-        frame = cv2.resize(frame, target_size, interpolation=cv2.INTER_AREA)
-        
-        # Detect faces
-        frame, bboxs = faceBox(face_net, frame, confidence_threshold)
-        faces_detected = len(bboxs) > 0
-        
-        for bbox in bboxs:
-            x1, y1, x2, y2 = bbox
-            x1, y1 = max(0, x1), max(0, y1)
-            x2, y2 = min(frame.shape[1], x2), min(frame.shape[0], y2)
-            if x2 <= x1 or y2 <= y1:
-                continue
-                
-            face = frame[y1:y2, x1:x2]
+def detect_age_and_gender(frame, confidence_threshold=0.7):
+    if face_net is None or age_net is None or gender_net is None:
+        return frame, "Model loading failed", "N/A"
+
+    frame_opencv = frame.copy()
+    h, w = frame_opencv.shape[:2]
+    blob = cv2.dnn.blobFromImage(frame_opencv, 1.0, (320, 240), (104.0, 177.0, 123.0))
+    face_net.setInput(blob)
+    detections = face_net.forward()
+
+    age = "N/A"
+    gender = "N/A"
+    for i in range(detections.shape[2]):
+        confidence = detections[0, 0, i, 2]
+        if confidence > confidence_threshold:
+            box = detections[0, 0, i, 3:7] * np.array([w, h, w, h])
+            (startX, startY, endX, endY) = box.astype("int")
+            face = frame_opencv[startY:endY, startX:endX]
             if face.size == 0:
-                logger.warning("Empty face ROI detected")
                 continue
-                
-            blob = cv2.dnn.blobFromImage(face, 1.0, (227, 227), MODEL_MEAN_VALUES, swapRB=False)
+
+            face_blob = cv2.dnn.blobFromImage(face, 1.0, (227, 227), MODEL_MEAN_VALUES, swapRB=False)
             
             # Gender detection
-            gender_net.setInput(blob)
-            gender_pred = gender_net.forward()
-            gender = GENDER_LIST[gender_pred[0].argmax()]
-            
-            # Age detection
-            age_net.setInput(blob)
-            age_pred = age_net.forward()
-            age = AGE_LIST[age_pred[0].argmax()]
-            
-            # Add label
-            label = f"{gender},{age}"
-            cv2.rectangle(frame, (x1, y1-10), (x2, y1), (0, 255, 0), -1)
-            cv2.putText(frame, label, (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
-        
-        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        return frame, faces_detected
-    except Exception as e:
-        logger.error(f"Error in detect_age_and_gender: {str(e)}")
-        return None, False
+            gender_net.setInput(face_blob)
+            gender_preds = gender_net.forward()
+            gender = GENDER_LIST[gender_preds[0].argmax()]
 
-# WebRTC video processor class
+            # Age detection
+            age_net.setInput(face_blob)
+            age_preds = age_net.forward()
+            age = AGE_LIST[age_preds[0].argmax()]
+
+            # Draw rectangle and label
+            label = f"{gender}, {age}, Conf: {confidence:.2f}"
+            cv2.rectangle(frame_opencv, (startX, startY), (endX, endY), (0, 255, 0), 2)
+            cv2.putText(frame_opencv, label, (startX, startY - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+            break
+
+    return frame_opencv, age, gender
+
 class AgeGenderProcessor(VideoProcessorBase):
     def __init__(self):
-        self.face_net, self.age_net, self.gender_net = load_models()
-        self.confidence_threshold = 0.7  # Default value
-        self.faces_detected = False
+        self.confidence_threshold = 0.7
 
-    def update_confidence(self, confidence):
-        self.confidence_threshold = confidence / 100.0
+    def update_confidence(self, threshold):
+        self.confidence_threshold = threshold
 
     def recv(self, frame):
         try:
-            if self.face_net is None or self.age_net is None or self.gender_net is None:
-                return frame
-
-            # Convert WebRTC frame to OpenCV format
             img = frame.to_ndarray(format="bgr24")
-
-            # Process frame for age and gender detection
-            processed_frame, self.faces_detected = detect_age_and_gender(
-                img, self.face_net, self.age_net, self.gender_net, self.confidence_threshold
-            )
-
-            if processed_frame is None:
-                return frame
-
-            # Convert back to WebRTC frame
-            return av.VideoFrame.from_ndarray(processed_frame, format="rgb24")
+            img, age, gender = detect_age_and_gender(img, self.confidence_threshold)
+            return av.VideoFrame.from_ndarray(img, format="bgr24")
         except Exception as e:
-            logger.error(f"Error in video processing: {str(e)}")
+            logger.error(f"Error processing frame: {e}")
+            st.error(f"Error processing frame: {e}")
             return frame
 
-def main():
-    st.set_page_config(page_title="Real-Time Age and Gender Detection", layout="centered")
-    st.title("Real-Time Age and Gender Detection")
-    st.write("Click 'Start' to begin real-time webcam streaming for age and gender detection.")
+# Twilio TURN server configuration
+def get_twilio_ice_servers():
+    try:
+        account_sid = os.environ.get("TWILIO_ACCOUNT_SID")
+        auth_token = os.environ.get("TWILIO_AUTH_TOKEN")
+        if not account_sid or not auth_token:
+            logger.warning("Twilio credentials not set, falling back to STUN")
+            return [
+                {"urls": ["stun:stun.l.google.com:19302"]},
+                {"urls": ["stun:stun1.l.google.com:19302"]},
+                {"urls": ["stun:stun2.l.google.com:19302"]}
+            ]
+        client = Client(account_sid, auth_token)
+        token = client.tokens.create()
+        logger.info("Successfully retrieved Twilio ICE servers")
+        return token.ice_servers
+    except Exception as e:
+        logger.error(f"Error retrieving Twilio ICE servers: {e}")
+        return [
+            {"urls": ["stun:stun.l.google.com:19302"]},
+            {"urls": ["stun:stun1.l.google.com:19302"]},
+            {"urls": ["stun:stun2.l.google.com:19302"]}
+        ]
 
-    # Initialize session state
-    if 'confidence_threshold' not in st.session_state:
-        st.session_state.confidence_threshold = 70
-    if 'streamer' not in st.session_state:
-        st.session_state.streamer = None
+st.title("Real-Time Age and Gender Detection")
+st.write("**Instructions**: Click 'Start' to enable your webcam. Grant browser permissions. Adjust the confidence threshold to fine-tune detection. Streaming may take a few seconds to initialize.")
 
-    # Sidebar configuration
-    with st.sidebar:
-        st.header("Configuration")
-        st.session_state.confidence_threshold = st.slider(
-            "Confidence Threshold (%)",
-            min_value=0,
-            max_value=100,
-            value=70,
-            step=1,
-            key="confidence_slider"
-        )
-
-    # WebRTC configuration
-    rtc_configuration = RTCConfiguration(
-        {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
-    )
-
-    # Initialize WebRTC streamer
-    webrtc_ctx = webrtc_streamer(
+confidence = st.slider("Confidence Threshold", 0.0, 1.0, 0.7, 0.05, key="confidence")
+try:
+    ctx = webrtc_streamer(
         key="age-gender-detection",
         video_processor_factory=AgeGenderProcessor,
-        rtc_configuration=rtc_configuration,
+        rtc_configuration=RTCConfiguration({"iceServers": get_twilio_ice_servers(), "iceTransportPolicy": "all"}),
         media_stream_constraints={"video": True, "audio": False},
-        async_processing=True
+        async_processing=True,
+        verbose=True
     )
-
-    # Status and frame display
-    status_placeholder = st.empty()
-    frame_placeholder = st.empty()
-
-    if webrtc_ctx.video_processor:
-        # Update confidence threshold dynamically
-        webrtc_ctx.video_processor.update_confidence(st.session_state.confidence_threshold)
-
-        if webrtc_ctx.state.playing:
-            status_placeholder.write(f"Streaming... Confidence Threshold: {st.session_state.confidence_threshold}%")
-        else:
-            status_placeholder.write("Click 'Start' to begin streaming.")
-    else:
-        status_placeholder.write("Camera not initialized.")
-
-if __name__ == "__main__":
-    main()
+    if ctx.video_processor:
+        ctx.video_processor.update_confidence(confidence)
+except Exception as e:
+    logger.error(f"WebRTC error: {e}")
+    st.error(f"WebRTC error: {e}. Check network or browser permissions.")
