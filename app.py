@@ -173,8 +173,8 @@ class AgeGenderProcessor(VideoProcessorBase):
             # Increment frame counter
             self.frame_counter += 1
             
-            # Process every 6th frame
-            if self.frame_counter % 600 == 0:
+            # Process first frame immediately or every 600th frame thereafter
+            if self.frame_counter == 1 or self.frame_counter % 600 == 0:
                 # Process frame for age and gender detection
                 processed_frame, self.faces_detected = detect_age_and_gender(
                     img, self.face_net, self.age_net, self.gender_net, self.confidence_threshold
