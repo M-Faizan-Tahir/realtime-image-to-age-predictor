@@ -19,6 +19,8 @@ st_webrtc_logger.setLevel(logging.WARNING)
 aioice_logger = logging.getLogger("aioice")
 aioice_logger.setLevel(logging.WARNING)
 
+# [Your existing functions: load_models, faceBox, detect_age_and_gender]
+# These are copied from your original app.py, unchanged
 def load_models():
     try:
         model_files = {
@@ -43,7 +45,7 @@ def load_models():
         logger.info("Successfully loaded all models")
         return face_net, age_net, gender_net
     except Exception as e:
-        logger.error(f"Failed to load models: {str(e)}", exc_info=True)
+        logger.error(f"Failed to load models: {str(e)}")
         st.error(f"Error loading models: {str(e)}")
         return None, None, None
 
@@ -66,7 +68,7 @@ def faceBox(faceNet, frame, confidence_threshold=0.7):
                 cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 1)
         return frame, bboxs
     except Exception as e:
-        logger.error(f"Error in faceBox: {str(e)}", exc_info=True)
+        logger.error(f"Error in faceBox: {str(e)}")
         return frame, []
 
 def detect_age_and_gender(frame, face_net, age_net, gender_net, confidence_threshold):
@@ -80,7 +82,7 @@ def detect_age_and_gender(frame, face_net, age_net, gender_net, confidence_thres
         GENDER_LIST = ['Male', 'Female']
         
         # Resize frame while maintaining aspect ratio
-        target_size = (320, 240)  # Reduced size for performance
+        target_size = (640, 480)
         frame = cv2.resize(frame, target_size, interpolation=cv2.INTER_AREA)
         
         # Detect faces
@@ -119,13 +121,14 @@ def detect_age_and_gender(frame, face_net, age_net, gender_net, confidence_thres
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         return frame, faces_detected
     except Exception as e:
-        logger.error(f"Error in detect_age_and_gender: {str(e)}", exc_info=True)
+        logger.error(f"Error in detect_age_and_gender: {str(e)}")
         return None, False
 
+# WebRTC video processor class
 class AgeGenderProcessor(VideoProcessorBase):
     def __init__(self):
         self.face_net, self.age_net, self.gender_net = load_models()
-        self.confidence_threshold = 0.7
+        self.confidence_threshold = 0.7  # Default value
         self.faces_detected = False
 
     def update_confidence(self, confidence):
@@ -133,40 +136,30 @@ class AgeGenderProcessor(VideoProcessorBase):
 
     def recv(self, frame):
         try:
-            if frame is None:
-                logger.warning("Received None frame")
-                return frame
-            if any(net is None for net in [self.face_net, self.age_net, self.gender_net]):
-                logger.error("One or more models are not loaded")
+            if self.face_net is None or self.age_net is None or self.gender_net is None:
                 return frame
 
+            # Convert WebRTC frame to OpenCV format
             img = frame.to_ndarray(format="bgr24")
-            if img.size == 0:
-                logger.warning("Empty frame received")
-                return frame
 
+            # Process frame for age and gender detection
             processed_frame, self.faces_detected = detect_age_and_gender(
                 img, self.face_net, self.age_net, self.gender_net, self.confidence_threshold
             )
+
             if processed_frame is None:
-                logger.warning("Processed frame is None")
                 return frame
 
+            # Convert back to WebRTC frame
             return av.VideoFrame.from_ndarray(processed_frame, format="rgb24")
         except Exception as e:
-            logger.error(f"Error in video processing: {str(e)}", exc_info=True)
+            logger.error(f"Error in video processing: {str(e)}")
             return frame
 
 def main():
     st.set_page_config(page_title="Real-Time Age and Gender Detection", layout="centered")
     st.title("Real-Time Age and Gender Detection")
     st.write("Click 'Start' to begin real-time webcam streaming for age and gender detection.")
-
-    # Check if models loaded successfully
-    face_net, age_net, gender_net = load_models()
-    if any(net is None for net in [face_net, age_net, gender_net]):
-        st.error("Failed to load models. Please check logs and ensure model files are available.")
-        return
 
     # Initialize session state
     if 'confidence_threshold' not in st.session_state:
@@ -186,31 +179,30 @@ def main():
             key="confidence_slider"
         )
 
-    # WebRTC configuration with multiple STUN servers
-    rtc_configuration = RTCConfiguration({
-        "iceServers": [
-            {"urls": ["stun:stun.l.google.com:19302"]},
-            {"urls": ["stun:stun1.l.google.com:19302"]}
-        ]
-    })
+    # WebRTC configuration
+    rtc_configuration = RTCConfiguration(
+        {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
+    )
 
-    # Initialize WebRTC streamer with lower frame rate
+    # Initialize WebRTC streamer
     webrtc_ctx = webrtc_streamer(
         key="age-gender-detection",
         video_processor_factory=AgeGenderProcessor,
         rtc_configuration=rtc_configuration,
-        media_stream_constraints={"video": {"frameRate": {"ideal": 15}}, "audio": False},
+        media_stream_constraints={"video": True, "audio": False},
         async_processing=True
     )
 
     # Status and frame display
     status_placeholder = st.empty()
+    frame_placeholder = st.empty()
+
     if webrtc_ctx.video_processor:
+        # Update confidence threshold dynamically
         webrtc_ctx.video_processor.update_confidence(st.session_state.confidence_threshold)
+
         if webrtc_ctx.state.playing:
             status_placeholder.write(f"Streaming... Confidence Threshold: {st.session_state.confidence_threshold}%")
-            if webrtc_ctx.video_processor.faces_detected:
-                status_placeholder.write("Faces detected!")
         else:
             status_placeholder.write("Click 'Start' to begin streaming.")
     else:
