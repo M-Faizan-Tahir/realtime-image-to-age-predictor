@@ -51,6 +51,7 @@ def faceBox(faceNet, frame, confidence_threshold=0.7):
     try:
         frame_height = frame.shape[0]
         frame_width = frame.shape[1]
+        # Create blob for face detection
         blob = cv2.dnn.blobFromImage(frame, 1.0, (227, 227), [104, 117, 123], swapRB=False)
         faceNet.setInput(blob)
         detection = faceNet.forward()
@@ -64,10 +65,10 @@ def faceBox(faceNet, frame, confidence_threshold=0.7):
                 y2 = int(detection[0, 0, i, 6] * frame_height)
                 bboxs.append([x1, y1, x2, y2])
                 cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 1)
-        return frame, bboxs
+        return frame, bboxs, blob
     except Exception as e:
         logger.error(f"Error in faceBox: {str(e)}")
-        return frame, []
+        return frame, [], None
 
 def detect_age_and_gender(frame, face_net, age_net, gender_net, confidence_threshold):
     try:
@@ -92,8 +93,8 @@ def detect_age_and_gender(frame, face_net, age_net, gender_net, confidence_thres
         width_scale = original_width / proc_width
         height_scale = original_height / proc_height
         
-        # Detect faces
-        frame, bboxs = faceBox(face_net, frame, confidence_threshold)
+        # Detect faces and get blob
+        frame, bboxs, face_blob = faceBox(face_net, frame, confidence_threshold)
         faces_detected = len(bboxs) > 0
         
         # Draw on original frame
@@ -101,22 +102,32 @@ def detect_age_and_gender(frame, face_net, age_net, gender_net, confidence_thres
         for bbox in bboxs:
             x1, y1, x2, y2 = bbox
             # Scale bounding box coordinates to original resolution
-            x1 = int(x1 * width_scale)
-            y1 = int(y1 * height_scale)
-            x2 = int(x2 * width_scale)
-            y2 = int(y2 * height_scale)
-            x1, y1 = max(0, x1), max(0, y1)
-            x2, y2 = min(original_width, x2), min(original_height, y2)
-            if x2 <= x1 or y2 <= y1:
+            x1_orig = int(x1 * width_scale)
+            y1_orig = int(y1 * height_scale)
+            x2_orig = int(x2 * width_scale)
+            y2_orig = int(y2 * height_scale)
+            x1_orig, y1_orig = max(0, x1_orig), max(0, y1_orig)
+            x2_orig, y2_orig = min(original_width, x2_orig), min(original_height, y2_orig)
+            if x2_orig <= x1_orig or y2_orig <= y1_orig:
                 continue
                 
             # Extract face ROI from original frame
-            face = original_frame[y1:y2, x1:x2]
+            face = original_frame[y1_orig:y2_orig, x1_orig:x2_orig]
             if face.size == 0:
                 logger.warning("Empty face ROI detected")
                 continue
                 
-            blob = cv2.dnn.blobFromImage(face, 1.0, (227, 227), MODEL_MEAN_VALUES, swapRB=False)
+            # Create blob for age and gender (reuse face_blob if single face covers frame)
+            if len(bboxs) == 1 and (x2 - x1) > proc_width * 0.8 and (y2 - y1) > proc_height * 0.8:
+                # Single face covering most of the frame; adjust mean values of face_blob
+                blob = face_blob.copy()
+                # Adjust mean subtraction: subtract face mean and add age/gender mean
+                mean_face = np.array([104, 117, 123])
+                mean_age_gender = np.array(MODEL_MEAN_VALUES)
+                blob += (mean_face - mean_age_gender).reshape(1, 3, 1, 1)
+            else:
+                # Create new blob for face ROI
+                blob = cv2.dnn.blobFromImage(face, 1.0, (227, 227), MODEL_MEAN_VALUES, swapRB=False)
             
             # Gender detection
             gender_net.setInput(blob)
@@ -130,9 +141,9 @@ def detect_age_and_gender(frame, face_net, age_net, gender_net, confidence_thres
             
             # Add label on original frame
             label = f"{gender},{age}"
-            cv2.rectangle(output_frame, (x1, y1-10), (x2, y1), (0, 255, 0), -1)
-            cv2.putText(output_frame, label, (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
-            cv2.rectangle(output_frame, (x1, y1), (x2, y2), (0, 255, 0), 1)
+            cv2.rectangle(output_frame, (x1_orig, y1_orig-10), (x2_orig, y1_orig), (0, 255, 0), -1)
+            cv2.putText(output_frame, label, (x1_orig, y1_orig-10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
+            cv2.rectangle(output_frame, (x1_orig, y1_orig), (x2_orig, y2_orig), (0, 255, 0), 1)
         
         output_frame = cv2.cvtColor(output_frame, cv2.COLOR_BGR2RGB)
         return output_frame, faces_detected
