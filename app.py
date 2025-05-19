@@ -130,8 +130,7 @@ try:
         video_processor_factory=AgeGenderProcessor,
         rtc_configuration=RTCConfiguration({"iceServers": get_twilio_ice_servers(), "iceTransportPolicy": "all"}),
         media_stream_constraints={"video": True, "audio": False},
-        async_processing=True,
-        verbose=True
+        async_processing=True
     )
     if ctx.video_processor:
         ctx.video_processor.update_confidence(confidence)
