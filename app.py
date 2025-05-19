@@ -79,22 +79,39 @@ def detect_age_and_gender(frame, face_net, age_net, gender_net, confidence_thres
         AGE_LIST = ['(0-2)', '(4-6)', '(8-12)', '(15-20)', '(25-32)', '(38-43)', '(48-53)', '(60-100)']
         GENDER_LIST = ['Male', 'Female']
         
-        # Resize frame while maintaining aspect ratio
-        target_size = (640, 480)
+        # Store original frame and its dimensions
+        original_frame = frame.copy()
+        original_height, original_width = frame.shape[:2]
+        
+        # Resize frame for processing
+        target_size = (320, 240)
         frame = cv2.resize(frame, target_size, interpolation=cv2.INTER_AREA)
+        proc_height, proc_width = frame.shape[:2]
+        
+        # Calculate scaling factors
+        width_scale = original_width / proc_width
+        height_scale = original_height / proc_height
         
         # Detect faces
         frame, bboxs = faceBox(face_net, frame, confidence_threshold)
         faces_detected = len(bboxs) > 0
         
+        # Draw on original frame
+        output_frame = original_frame.copy()
         for bbox in bboxs:
             x1, y1, x2, y2 = bbox
+            # Scale bounding box coordinates to original resolution
+            x1 = int(x1 * width_scale)
+            y1 = int(y1 * height_scale)
+            x2 = int(x2 * width_scale)
+            y2 = int(y2 * height_scale)
             x1, y1 = max(0, x1), max(0, y1)
-            x2, y2 = min(frame.shape[1], x2), min(frame.shape[0], y2)
+            x2, y2 = min(original_width, x2), min(original_height, y2)
             if x2 <= x1 or y2 <= y1:
                 continue
                 
-            face = frame[y1:y2, x1:x2]
+            # Extract face ROI from original frame
+            face = original_frame[y1:y2, x1:x2]
             if face.size == 0:
                 logger.warning("Empty face ROI detected")
                 continue
@@ -111,13 +128,14 @@ def detect_age_and_gender(frame, face_net, age_net, gender_net, confidence_thres
             age_pred = age_net.forward()
             age = AGE_LIST[age_pred[0].argmax()]
             
-            # Add label
+            # Add label on original frame
             label = f"{gender},{age}"
-            cv2.rectangle(frame, (x1, y1-10), (x2, y1), (0, 255, 0), -1)
-            cv2.putText(frame, label, (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
+            cv2.rectangle(output_frame, (x1, y1-10), (x2, y1), (0, 255, 0), -1)
+            cv2.putText(output_frame, label, (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
+            cv2.rectangle(output_frame, (x1, y1), (x2, y2), (0, 255, 0), 1)
         
-        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        return frame, faces_detected
+        output_frame = cv2.cvtColor(output_frame, cv2.COLOR_BGR2RGB)
+        return output_frame, faces_detected
     except Exception as e:
         logger.error(f"Error in detect_age_and_gender: {str(e)}")
         return None, False
