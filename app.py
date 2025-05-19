@@ -19,8 +19,6 @@ st_webrtc_logger.setLevel(logging.WARNING)
 aioice_logger = logging.getLogger("aioice")
 aioice_logger.setLevel(logging.WARNING)
 
-# [Your existing functions: load_models, faceBox, detect_age_and_gender]
-# These are copied from your original app.py, unchanged
 def load_models():
     try:
         model_files = {
@@ -82,7 +80,7 @@ def detect_age_and_gender(frame, face_net, age_net, gender_net, confidence_thres
         GENDER_LIST = ['Male', 'Female']
         
         # Resize frame while maintaining aspect ratio
-        target_size = (320, 240)
+        target_size = (640, 480)
         frame = cv2.resize(frame, target_size, interpolation=cv2.INTER_AREA)
         
         # Detect faces
@@ -124,12 +122,13 @@ def detect_age_and_gender(frame, face_net, age_net, gender_net, confidence_thres
         logger.error(f"Error in detect_age_and_gender: {str(e)}")
         return None, False
 
-# WebRTC video processor class
 class AgeGenderProcessor(VideoProcessorBase):
     def __init__(self):
         self.face_net, self.age_net, self.gender_net = load_models()
         self.confidence_threshold = 0.7  # Default value
         self.faces_detected = False
+        self.frame_counter = 0
+        self.last_processed_frame = None
 
     def update_confidence(self, confidence):
         self.confidence_threshold = confidence / 100.0
@@ -141,11 +140,22 @@ class AgeGenderProcessor(VideoProcessorBase):
 
             # Convert WebRTC frame to OpenCV format
             img = frame.to_ndarray(format="bgr24")
-
-            # Process frame for age and gender detection
-            processed_frame, self.faces_detected = detect_age_and_gender(
-                img, self.face_net, self.age_net, self.gender_net, self.confidence_threshold
-            )
+            
+            # Increment frame counter
+            self.frame_counter += 1
+            
+            # Process every 3rd frame
+            if self.frame_counter % 3 == 0:
+                # Process frame for age and gender detection
+                processed_frame, self.faces_detected = detect_age_and_gender(
+                    img, self.face_net, self.age_net, self.gender_net, self.confidence_threshold
+                )
+                
+                if processed_frame is not None:
+                    self.last_processed_frame = processed_frame
+            else:
+                # Use the last processed frame if available, otherwise return the current frame
+                processed_frame = self.last_processed_frame if self.last_processed_frame is not None else img
 
             if processed_frame is None:
                 return frame
